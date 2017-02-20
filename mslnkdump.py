@@ -1,12 +1,24 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+#--------------------------------------------------------------------------------
+# Microsoft Shell Link file dump utility Version: 0.1
+# by nyacom <kzh@nyacom.net> (C) 2017
+#--------------------------------------------------------------------------------
+
+# Shell Link (.LNK) Binary File Format refference:
+# https://msdn.microsoft.com/en-us/library/dd871305.aspx
+# This script based on Rev3.0 Spec.
+
 # import for Python3.X compartibility
 from __future__ import print_function
 
-import sys
+import sys, traceback
 import os
 import struct
+
+WIN_CHARSET = 'cp932'
+WIN_UNICODE = 'utf-16'
 
 #--------------------------------------------------------------------------------
 # Constants
@@ -50,11 +62,60 @@ EXTDAT_SIG_IconEnvironmentDataBlock			= 0xA0000007
 EXTDAT_SIG_KnownFolderDataBlock				= 0xA000000B
 EXTDAT_SIG_PropertyStoreDataBlock			= 0xA0000009
 EXTDAT_SIG_ShimDataBlock				= 0xA0000008
-EXTDAT_SIG_SpecialFilderDataBlock			= 0xA0000005
+EXTDAT_SIG_SpecialFolderDataBlock			= 0xA0000005
 EXTDAT_SIG_TrackerDataBlock				= 0xA0000003
 EXTDAT_SIG_VistaAndAboveIDListDataBlock			= 0xA000000c
 
 #--------------------------------------------------------------------------------
+# Utility function
+#--------------------------------------------------------------------------------
+def DEBUGINFO():
+	trc = traceback.format_tb(sys.exc_info()[2])
+	return trc
+
+def BLKRD(fd, length):
+	buf = fd.read(length)
+	if buf == "":
+		print('Unexpected EOF reached at "{0:s}"[{1:d}]'.format(fd.name, fd.tell()))
+		raise Exception
+	return buf
+
+def ICONV_W16_2_W8(buf):
+	return buf.decode('utf-16').encode('utf-8')
+
+def ICONV_SJIS_W8(buf):
+	return buf.decode('cp932').encode('utf-8')
+
+#--------------------------------------------------------------------------------
+class ItemID(object):
+	def __init__(self, size, data):
+		self.ItemIDSize = size
+		self.Data = data
+
+class IDList(object):
+	def __init__(self, buf):
+		self.ItemIDList = []
+		self.unpack(buf)
+
+	def unpack(self, buf):
+		i = 0
+		while True:
+			try:
+				ItemIDSize = int(struct.unpack('<H', buf[i:i+2])[0])
+				i += 2
+
+				if ItemIDSize == 0:
+					break
+
+				Data = buf[i:i+ItemIDSize-2]
+				i += ItemIDSize-2
+
+				self.ItemIDList.append(ItemID(ItemIDSize, Data))
+
+			except struct.error as e:
+				print("Something error", e, self.__class__)
+				quit()
+
 class LinkTargetIDList(object):
 	def __init__(self, fd, LinkFlags):
 		self.IDListSize = 0	# 2B
@@ -62,55 +123,17 @@ class LinkTargetIDList(object):
 
 		if LinkFlags & LNKFLG_HasLinkTargetIDList:
 			try:
-				self.IDListSize = int(struct.unpack('<H', fd.read(2))[0])
-				buf = fd.read(self.IDListSize)
+				self.IDListSize = int(struct.unpack('<H', BLKRD(fd, 2))[0])
+				buf = BLKRD(fd, self.IDListSize)
 				self.unpack(buf)
 
 			except struct.error as e:
-				print("Something error", e)
+				print("Something error", e, self.__class__)
 				quit()
 
 	def unpack(self, buf):
-		buf = fd.read(self.IDListSize)
-		self.IDList = self._IDList(buf)
+		self.IDList = IDList(buf)
 
-	class _ItemID(object):
-		def __init__(self, buf):
-			self.ItemIDSize = 0
-			self.Data = None
-			
-			self.unpack(buf)
-
-		def unpack(self, buf):
-			try:
-				i = 0
-				self.ItemIDSize = int(struct.unpack('<H', buf[i:i+2])[0])
-				i += 2
-				self.Data = buf[i:self.ItemIDSize-2]
-				i += self.ItemIDSize-2
-
-			except struct.error as e:
-				print("Something error", e)
-				quit()
-
-	class _IDList(object):
-		def __init__(self, buf):
-			self.ItemIDList = None
-			self.TerminalID = 0
-			
-			self.unpack(buf)
-
-		def unpack(self, buf):
-			try:
-				i = 0
-				self.ItemIDList = self._ItemID(buf)
-				i += self.ItemIDList.ItemIDSize
-				self.TerminalID = int(struct.unpack('<H', buf[i:2])[0])
-				i += 2
-
-			except struct.error as e:
-				print("Something error", e)
-				quit()
 
 class LinkInfo(object):
 	def __init__(self, fd, LinkFlags):
@@ -132,8 +155,8 @@ class LinkInfo(object):
 
 		if LinkFlags & LNKFLG_HasLinkInfo:
 			try:
-				self.LinkInfoSize= int(struct.unpack('<I', fd.read(4))[0])
-				buf = fd.read(self.LinkInfoSize - 4)
+				self.LinkInfoSize= int(struct.unpack('<I', BLKRD(fd, 4))[0])
+				buf = BLKRD(fd, self.LinkInfoSize-4)
 				self.unpack(buf)
 
 			except struct.error as e:
@@ -169,7 +192,7 @@ class LinkInfo(object):
 				i += self.VolumeID.VolumeIDSize
 
 				# for LocalBasePath field
-				self.LocalBasePath = buf[i:].split(b'\x00')[0]
+				self.LocalBasePath = buf[i:].split(b'\x00')[0].decode('cp932').encode('utf-8')
 				i += len(self.LocalBasePath)
 
 			# for CommonNetworkRelativeLink
@@ -253,10 +276,10 @@ class LinkInfo(object):
 
 				# String Field
 				if self.NetNameOffset > 0:
-					self.NetName = buf[self.NetNameOffset:].split(b'\x00')[0]
+					self.NetName = buf[self.NetNameOffset:].split(b'\x00')[0].decode('cp932').encode('utf-8')
 
 				if self.DeviceNameOffset > 0:
-					self.DeviceName = buf[self.DeviceNameOffset:].split(b'\x00')[0]
+					self.DeviceName = buf[self.DeviceNameOffset:].split(b'\x00')[0].decode('cp932').encode('utf-8')
 
 				if self.NetNameOffset > 0x14:
 					self.NetNameOffsetUnicode = int(struct.unpack('<I', buf[i:i+4])[0])
@@ -265,10 +288,10 @@ class LinkInfo(object):
 					i += 4
 
 					if self.NetNameOffsetUnicode > 0:
-						self.NetNameUnicode = buf[self.NetNameOffsetUnicode:].split(b'\x00')[0]
+						self.NetNameUnicode = buf[self.NetNameOffsetUnicode:].split(b'\x00\x00')[0].decode('cp932').encode('utf-8')
 
 					if self.DeviceNameOffsetUnicode > 0:
-						self.DeviceNameUnicode = buf[self.DeviceNameOffsetUnicode:].split(b'\x00')[0]
+						self.DeviceNameUnicode = buf[self.DeviceNameOffsetUnicode:].split(b'\x00\x00')[0].decode('cp932').encode('utf-8')
 
 			except struct.error as e:
 				print("Something error", e, self.__class__)
@@ -293,12 +316,12 @@ class ShellLinkHeader(object):
 		self.Reserved3 = 0		# 4B
 
 		try:
-			self.HeaderSize = int(struct.unpack('<I', fd.read(4))[0])
+			self.HeaderSize = int(struct.unpack('<I', BLKRD(fd, 4))[0])
 			if self.HeaderSize != 76:
 				print("Something error", e, self.__class__)
 				quit(1)
 
-			buf = fd.read(self.HeaderSize - 4)
+			buf = BLKRD(fd, self.HeaderSize - 4)
 			self.unpack(buf)
 
 		except struct.error as e:
@@ -349,28 +372,34 @@ class StringData(object):
 		self.IconLocation = None
 		
 		if LinkFlags & LNKFLG_HasName:
-			self.NameString = self._StringData(fd)
+			self.NameString = self._StringData(fd, LinkFlags)
 
 		if LinkFlags & LNKFLG_HasRelativePath:
-			self.RelativePath = self._StringData(fd)
+			self.RelativePath = self._StringData(fd, LinkFlags)
 
 		if LinkFlags & LNKFLG_HasWorkingDir:
-			self.WorkingDir = self._StringData(fd)
+			self.WorkingDir = self._StringData(fd, LinkFlags)
 
 		if LinkFlags & LNKFLG_HasArgument:
-			self.CommandLineArguments = self._StringData(fd)
+			self.CommandLineArguments = self._StringData(fd, LinkFlags)
 
 		if LinkFlags & LNKFLG_HasIconLocation:
-			self.IconLocation = self._StringData(fd)
+			self.IconLocation = self._StringData(fd, LinkFlags)
 
 	class _StringData(object):
-		def __init__(self, fd):
+		def __init__(self, fd, LinkFlags):
 			self.CountCharacters = 0
-			self.String = ""
+			self.String = ()
 
 			try:
-				self.CountCharacters = int(struct.unpack("<H", fd.read(2))[0])
-				self.String = fd.read(self.CountCharacters)
+				self.CountCharacters = int(struct.unpack("<H", BLKRD(fd, 2))[0])
+
+				if LinkFlags & LNKFLG_ISUnicode:
+					self.CountCharacters = self.CountCharacters * 2
+					self.String = ICONV_W16_2_W8(BLKRD(fd, self.CountCharacters))
+				else:
+					self.String = ICONV_SJIS_W8(BLKRD(fd, self.CountCharacters))
+
 
 			except struct.error as e:
 				print("Something error", e, self.__class__)
@@ -393,72 +422,77 @@ class ExtraData(object):
 
 		while True:
 			try:
-				BlockSize = int(struct.unpack("<I", fd.read(4))[0])
+				BlockSize = int(struct.unpack("<I", BLKRD(fd, 4))[0])
 
+				# Check next block is terminal block
 				if BlockSize < 0x4:
 					self.TerminalBlock = BlockSize
 					break
 
-				BlockSignature = int(struct.unpack("<I", fd.read(4))[0])
-				buf = fd.read(BlockSize - 8)
+				BlockSignature = int(struct.unpack("<I", BLKRD(fd, 4))[0])
+				buf = BLKRD(fd, BlockSize - 8)
 
 				if BlockSignature == EXTDAT_SIG_ConsoleDataBlock:
 					self.ConsoleProps = self._ConsoleDataBlock(buf)
 					self.ConsoleProps.BlockSize = BlockSize
 					self.ConsoleProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_ConsoleFEDataBlock:
+				elif BlockSignature == EXTDAT_SIG_ConsoleFEDataBlock:
 					self.ConsoleFEProps = self._ConsoleDataFEBlock(buf)
 					self.ConsoleFEProps.BlockSize = BlockSize
 					self.ConsoleFEProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_DarwinDataBlock:
+				elif BlockSignature == EXTDAT_SIG_DarwinDataBlock:
 					self.DarwinProps = self._DarwinDataBlock(buf)
 					self.DarwinProps.BlockSize = BlockSize
 					self.DarwinProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_EnvironmentVariableDataBlock:
+				elif BlockSignature == EXTDAT_SIG_EnvironmentVariableDataBlock:
 					self.EnvironmentProps = self._EnvironmentVariableDataBlock(buf)
 					self.EnvironmentProps.BlockSize = BlockSize
 					self.EnvironmentProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_IconEnvironmentDataBlock:
+				elif BlockSignature == EXTDAT_SIG_IconEnvironmentDataBlock:
 					self.IconEnvironmentProps = self._IconEnvironmentDataBlock(buf)
 					self.IconEnvironmentProps.BlockSize = BlockSize
 					self.IconEnvironmentProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_KnownFolderDataBlock:
+				elif BlockSignature == EXTDAT_SIG_KnownFolderDataBlock:
 					self.KnownFolderProps = self._KnownFolderDataBlock(buf)
 					self.KnownFolderProps.BlockSize = BlockSize
 					self.KnownFolderProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_PropertyStoreDataBlock:
+				elif BlockSignature == EXTDAT_SIG_PropertyStoreDataBlock:
 					self.PropertyStoreProps = self._PropertyStoreDataBlock(buf)
 					self.PropertyStoreProps.BlockSize = BlockSize
 					self.PropertyStoreProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_ShimDataBlock:
+				elif BlockSignature == EXTDAT_SIG_ShimDataBlock:
 					self.ShimProps = self._ShimDataBlock(buf)
 					self.ShimProps.BlockSize = BlockSize
 					self.ShimProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_SpecialFilderDataBlock:
+				elif BlockSignature == EXTDAT_SIG_SpecialFolderDataBlock:
 					self.SpecialFolderProps = self._SpecialFolderDataBlock(buf)
 					self.SpecialFolderProps.BlockSize = BlockSize
 					self.SpecialFolderProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_TrackerDataBlock:
+				elif BlockSignature == EXTDAT_SIG_TrackerDataBlock:
 					self.TrackerProps = self._TrackDataBlock(buf)
 					self.TrackerProps.BlockSize = BlockSize
 					self.TrackerProps.BlockSignature = BlockSignature
 
-				if BlockSignature == EXTDAT_SIG_VistaAndAboveIDListDataBlock:
+				elif BlockSignature == EXTDAT_SIG_VistaAndAboveIDListDataBlock:
 					self.VistaAndAboveIDListProps = self._VistaAndAboveIDListDataBlock(buf)
 					self.VistaAndAboveIDListProps.BlockSize = BlockSize
 					self.VistaAndAboveIDListProps.BlockSignature = BlockSignature
 
+				else:
+					print("Unknown ExtraDataBlock signature {0:x}".format(BlockSignature))
+					raise Exception
+
 			except struct.error as e:
-				print("Something error", e, self.__class__)
+				print("Something error", e, self.__class__, DEBUGINFO())
 				quit()
 
 	class _ConsoleDataBlock(object):
@@ -575,11 +609,11 @@ class ExtraData(object):
 		def unpack(self, buf):
 			try:
 				i = 0
-				self.DarwinDataAnsi = buf[i:i+260].split(b'\x00')[0]
+				self.DarwinDataAnsi = ICONV_SJIS_W8(buf[i:i+260])
 				i += 260
 
 				if len(buf) > i:
-					self.DarwinDataUnicode = buf[i:i+520].split(b'\x00')[0]
+					self.DarwinDataUnicode = ICONV_W16_2_W8(buf[i:i+520])
 					i += 520
 
 			except struct.error as e:
@@ -598,11 +632,11 @@ class ExtraData(object):
 		def unpack(self, buf):
 			try:
 				i = 0
-				self.TargetAnsi = buf[i:i+260].split(b'\x00')[0]
+				self.TargetAnsi = ICONV_SJIS_W8(buf[i:i+260])
 				i += 260
 
 				if len(buf) > i:
-					self.TargetUnicode = buf[i:i+520].split(b'\x00')[0]
+					self.TargetUnicode = ICONV_W16_2_W8(buf[i:i+520])
 					i += 520
 
 			except struct.error as e:
@@ -621,11 +655,11 @@ class ExtraData(object):
 		def unpack(self, buf):
 			try:
 				i = 0
-				self.TargetAnsi = buf[i:i+260].split(b'\x00')[0]
+				self.TargetAnsi = ICONV_SJIS_W8(buf[i:i+260])
 				i += 260
 
 				if len(buf) > i:
-					self.TargetUnicode = buf[i:i+520].split(b'\x00')[0]
+					self.TargetUnicode = ICONV_W16_2_W8(buf[i:i+520])
 					i += 520
 
 			except struct.error as e:
@@ -763,13 +797,15 @@ def print_dump(cls, basename):
 			#print('{0:s}'.format(k))
 			print_dump(v, basename + k + '.')
 		else:
-			print('{0:s}{1:s} '.format(basename, k), end='')
 			if isinstance(v, str):
-				print('"{0:s}"'.format(v))	# String
+				print('{0:s}{1:s} {2:s}'.format(basename, k, v))
 			elif isinstance(v, int):
-				print('{0:d}'.format(int(v)))	# Integer
+				print('{0:s}{1:s} {2:d}'.format(basename, k, v))
+			elif isinstance(v, list):
+				for i, l in enumerate(v):
+					print_dump(l, '{0:s}{1:s}{2:d}.'.format(basename, k, i))
 			else:
-				print(repr(v))			# else
+				print('{0:s}{1:s} {2:s}'.format(basename, k, repr(v)))	# else
 
 #--------------------------------------------------------------------------------
 def main():
@@ -798,10 +834,9 @@ def main():
 	strdata = None
 	extdata = None
 	
+	print("\n<<<< LinkTargetIDList Secion at 0x{0:08x} >>>>".format(fd.tell()))
 	lnktgt = LinkTargetIDList(fd, slh.LinkFlags)
-	lnkinfo = LinkInfo(fd, slh.LinkFlags)
-	strdata = StringData(fd, slh.LinkFlags)
-	extdata = ExtraData(fd, slh.LinkFlags)
+	print_dump(lnktgt, '')
 
 	# Non segment identificate flags
 	if slh.LinkFlags & LNKFLG_ISUnicode:
@@ -864,10 +899,18 @@ def main():
 	if slh.LinkFlags & LNKFLG_KeepLocalIDListForUNCTarget:
 		print("LinkFlag: KeepLocalIDListForUNCTarget is active")
 
-	print_dump(lnktgt, '')
+	print("\n<<<< LinkInfo Secion at 0x{0:08x} >>>>".format(fd.tell()))
+	lnkinfo = LinkInfo(fd, slh.LinkFlags)
 	print_dump(lnkinfo, '')
+
+	print("\n<<<< StringData Secion at 0x{0:08x} >>>>".format(fd.tell()))
+	strdata = StringData(fd, slh.LinkFlags)
 	print_dump(strdata, '')
+
+	print("\n<<<< ExtraData Secion at 0x{0:08x} >>>>".format(fd.tell()))
+	extdata = ExtraData(fd, slh.LinkFlags)
 	print_dump(extdata, '')
+
 	print("")
 
 	fd.close()
